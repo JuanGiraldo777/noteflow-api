@@ -27,8 +27,9 @@ interface NoteRow {
   is_archived: boolean;
   created_at: string;
   updated_at: string;
+  items: unknown;  // viene como string JSON o array según el driver
+  tags: unknown;   // viene como string JSON o array según el driver
 }
-
 // Convierte una fila SQL (snake_case) al formato que espera la app móvil (camelCase).
 // Centralizar esta conversión aquí evita olvidar campos al devolver datos.
 function toNote(row: NoteRow) {
@@ -41,6 +42,14 @@ function toNote(row: NoteRow) {
     isArchived: row.is_archived,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // Parseamos items: puede venir como string JSON, array, o null
+    items: row.items
+      ? (typeof row.items === 'string' ? JSON.parse(row.items) : row.items)
+      : [],
+    // Parseamos tags: igual que items
+    tags: row.tags
+      ? (typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags)
+      : [],
   };
 }
 
@@ -48,10 +57,21 @@ function toNote(row: NoteRow) {
 export async function GET() {
   try {
     const notes = await query<NoteRow>(
-      'SELECT id, title, type, content, color, is_archived, created_at, updated_at FROM notes WHERE is_archived = FALSE ORDER BY created_at DESC',
+      `SELECT
+        n.id, n.title, n.type, n.content, n.color, n.is_archived, n.created_at, n.updated_at,
+        json_agg(
+          json_build_object('id', ci.id, 'text', ci.text, 'isCompleted', ci.is_completed)
+        ) FILTER (WHERE ci.id IS NOT NULL) AS items,
+        json_agg(nt.tag) FILTER (WHERE nt.id IS NOT NULL) AS tags
+      FROM notes n
+      LEFT JOIN checklist_items ci ON n.id = ci.note_id
+      LEFT JOIN note_tags nt ON n.id = nt.note_id
+      WHERE n.is_archived = FALSE
+      GROUP BY n.id
+      ORDER BY n.created_at DESC`
     );
 
-    // Convertimos cada fila a camelCase antes de enviarla al cliente.
+    // Reutilizamos toNote para la conversión, sin duplicar lógica
     return NextResponse.json(notes.map(toNote));
   } catch {
     return NextResponse.json({ error: 'Error interno' }, { status: 500 });
